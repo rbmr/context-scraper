@@ -63,7 +63,7 @@ async def create_pdf_from_url(url: str, dest: Path, browser: Optional[Browser] =
     """
     logger.info(f"Creating PDF from URL: {url}")
     try:
-        if browser:
+        if browser is not None:
             page = await browser.new_page()
             await _generate_pdf_on_page(page, url, dest)
             await page.close()
