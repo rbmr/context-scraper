@@ -13,7 +13,7 @@ pypdf = "^6.1.1"
 beautifulsoup4 = "^4.14.2"
 pydantic = "^2.12.3"
 pydantic-settings = "^2.11.0"
-httpx = "^0.28.1"
+httpx = {extras = ["http2"], version = "^0.28.1"}
 lxml = "^6.0.2"
 
 

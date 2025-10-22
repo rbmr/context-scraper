@@ -2,6 +2,8 @@ from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SRC_DIR.parent
+ENV_PATH = PROJECT_DIR / ".env"
+STATE_FILE = PROJECT_DIR / "state.json"
 
 LOGGING_CONFIG = {
     'version': 1,

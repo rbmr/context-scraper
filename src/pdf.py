@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
-from playwright.async_api import async_playwright, Browser, Page
+from playwright.async_api import Page, BrowserContext
 from pypdf import PdfWriter
 
 from src.constants import SRC_DIR
@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 def merge_pdfs(src: List[Path], dest: Path) -> None:
     """Merge multiple PDF files into a single PDF."""
-    pdf_merger = PdfWriter()
 
+    # Validate input sources
     valid_sources = []
     for pdf_src in src:
         if not pdf_src.is_file():
@@ -30,9 +30,10 @@ def merge_pdfs(src: List[Path], dest: Path) -> None:
         logger.warning(f"No valid source files found, ignoring.")
         return
 
+    # Merge and save
+    pdf_merger = PdfWriter()
     for src_path in valid_sources:
         pdf_merger.append(src_path)
-
     try:
         with open(dest, "wb") as f_out:
             pdf_merger.write(f_out)
@@ -42,60 +43,46 @@ def merge_pdfs(src: List[Path], dest: Path) -> None:
     finally:
         pdf_merger.close()
 
-
-async def _generate_pdf_on_page(page: Page, url: str, dest: Path):
-    """Core logic to navigate and print a PDF from a URL on a given page."""
-    await page.goto(url, wait_until="networkidle", timeout=60_000)
-    await page.wait_for_timeout(500)
-    await page.pdf(
-        path=str(dest),
-        format="A4",
-        print_background=True
-    )
-
-
-async def create_pdf_from_url(url: str, dest: Path, browser: Optional[Browser] = None) -> Optional[Path]:
+async def create_pdf_from_url(
+        browser: BrowserContext,
+        url: str, dest: Path,
+) -> Optional[Path]:
     """
     Creates a PDF from a URL.
-    If a browser instance is provided, it's used to create a new page.
-    Otherwise, a new browser is created for this single operation.
     Returns the destination path on success, None on failure.
     """
     logger.info(f"Creating PDF from URL: {url}")
+    page: Optional[Page] = None
     try:
-        if browser is not None:
-            page = await browser.new_page()
-            await _generate_pdf_on_page(page, url, dest)
-            await page.close()
-        else:
-            async with async_playwright() as p:
-                browser_instance = await p.chromium.launch()
-                page = await browser_instance.new_page()
-                await _generate_pdf_on_page(page, url, dest)
-                await browser_instance.close()
-
+        page = await browser.new_page()
+        await page.goto(url, wait_until="networkidle", timeout=60_000)
+        await page.pdf(
+            path=str(dest),
+            format="A4",
+            print_background=True
+        )
         logger.info(f"Successfully created PDF: {dest}")
         return dest
     except Exception as e:
         logger.error(f"Failed to create PDF from URL {url}. Error: {e}")
         return None
+    finally:
+        if page is not None and not page.is_closed():
+            await page.close()
 
-
-async def create_pdf_from_urls(urls: List[str], output_file: Path = DEFAULT_OUTPUT):
+async def create_pdf_from_urls(browser: BrowserContext, urls: List[str], output_file: Path = DEFAULT_OUTPUT):
     """Creates multiple PDFs from a list of URLs in parallel and concatenates them."""
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_dir_path = Path(temp_dir)
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            tasks = []
-            for i, url in enumerate(urls):
-                temp_pdf_path = temp_dir_path / f"temp_{i}.pdf"
-                tasks.append(create_pdf_from_url(url, temp_pdf_path, browser=browser))
+        tasks = []
+        for i, url in enumerate(urls):
+            temp_pdf_path = temp_dir_path / f"temp_{i}.pdf"
+            tasks.append(create_pdf_from_url(browser, url, temp_pdf_path))
 
-            logger.info(f"Creating {len(tasks)} PDFs in parallel...")
-            results = await asyncio.gather(*tasks)
-            logger.info("All PDF creation tasks complete.")
+        logger.info(f"Creating {len(tasks)} PDFs in parallel...")
+        results = await asyncio.gather(*tasks)
+        logger.info("All PDF creation tasks complete.")
 
         temp_pdf_paths = [path for path in results if path is not None]
 
