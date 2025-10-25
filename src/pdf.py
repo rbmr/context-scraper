@@ -33,7 +33,11 @@ def merge_pdfs(src: List[Path], dest: Path) -> None:
     # Merge and save
     pdf_merger = PdfWriter()
     for src_path in valid_sources:
-        pdf_merger.append(src_path)
+        try:
+            pdf_merger.append(src_path)
+        except Exception as e:
+            logger.error(f"Could not append {src_path}. Error: {e}")
+
     try:
         with open(dest, "wb") as f_out:
             pdf_merger.write(f_out)
@@ -73,6 +77,7 @@ async def create_pdf_from_url(
 async def create_pdf_from_urls(browser: BrowserContext, urls: List[str], output_file: Path = DEFAULT_OUTPUT):
     """Creates multiple PDFs from a list of URLs in parallel and concatenates them."""
     with tempfile.TemporaryDirectory() as temp_dir:
+        logging.info(f"Using temporary directory for PDFs: {temp_dir}")
         temp_dir_path = Path(temp_dir)
 
         tasks = []
