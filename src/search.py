@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from typing import Set, Callable, Iterable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Page, Error as PlaywrightError
@@ -15,9 +15,19 @@ def parse_links(content: str, url: str) -> set[str]:
         href = a_tag['href'].strip()
         if not href or href.startswith(('#', 'javascript:', 'mailto:', 'tel:')):
             continue
-        absolute_link = urljoin(url, href).rstrip("/")
-        if urlparse(absolute_link).scheme in ['http', 'https']:
-            links.add(absolute_link)
+
+        full_link = urljoin(url, href)
+        parsed_url = urlparse(full_link)
+
+        if parsed_url.scheme in ('http', 'https'):
+            # remove fragment
+            cleaned_url = parsed_url._replace(fragment='')
+            cleaned_link = urlunparse(cleaned_url)
+            # remove trailing slash
+            cleaned_link = cleaned_link.rstrip("/")
+
+            links.add(cleaned_link)
+
     return links
 
 async def async_get_links(context: BrowserContext, url: str) -> Set[str]:
