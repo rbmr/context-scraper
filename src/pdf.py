@@ -8,6 +8,7 @@ from playwright.async_api import BrowserContext, Page
 from pypdf import PdfWriter
 
 from src.constants import SRC_DIR
+from tqdm.asyncio import tqdm as async_tqdm
 
 DEFAULT_OUTPUT = SRC_DIR / "output.pdf"
 logger = logging.getLogger(__name__)
@@ -75,7 +76,10 @@ async def create_pdf_from_url(
 
 
 async def create_pdf_from_urls(
-    browser: BrowserContext, urls: List[str], output_file: Path = DEFAULT_OUTPUT
+        browser: BrowserContext,
+        urls: List[str],
+        output_file: Path = DEFAULT_OUTPUT,
+        pbar: bool = False,
 ):
     """Creates multiple PDFs from a list of URLs in parallel and concatenates them."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -88,7 +92,18 @@ async def create_pdf_from_urls(
             tasks.append(create_pdf_from_url(browser, url, temp_pdf_path))
 
         logger.info(f"Creating {len(tasks)} PDFs in parallel...")
-        results = await asyncio.gather(*tasks)
+
+        if pbar:
+            results = await async_tqdm.gather(
+                *tasks,
+                desc=f"Creating PDFs",
+                total=len(tasks),
+                unit="pdf",
+                leave=False,
+            )
+        else:
+            results = await asyncio.gather(*tasks)
+
         logger.info("All PDF creation tasks complete.")
 
         temp_pdf_paths = [path for path in results if path is not None]
