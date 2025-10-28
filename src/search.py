@@ -5,6 +5,8 @@ from urllib.parse import urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext, Page, Error as PlaywrightError
+from tqdm.auto import trange
+from tqdm.asyncio import tqdm as async_tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -60,24 +62,37 @@ async def async_get_links(context: BrowserContext, url: str) -> Set[str]:
         logger.error(f"Unexpected error parsing URL {url}. Error: {e}")
         return set()
     finally:
-        if page and not page.is_closed():
+        if page is not None and not page.is_closed():
             await page.close()
 
 async def async_multi_get_links(
         context: BrowserContext,
         urls: Iterable[str],
-        semaphore: asyncio.Semaphore
+        semaphore: asyncio.Semaphore,
+        pbar: bool = False,
 ) -> Set[str]:
     """
     Creates and runs scraping tasks concurrently, constrained by the semaphore.
     """
+    if not urls:
+        return set()
+
     async def get_links_with_semaphore(url: str) -> Set[str]:
         """Wrapper to acquire semaphore before scraping."""
         async with semaphore:
             return await async_get_links(context, url)
 
     tasks = [get_links_with_semaphore(url) for url in urls]
-    results = await asyncio.gather(*tasks)
+    if pbar:
+        results = await async_tqdm.gather(
+            *tasks,
+            desc=f"Scraping URLs",
+            total=len(tasks),
+            unit="URL",
+            leave=False,
+        )
+    else:
+        results = await asyncio.gather(*tasks)
 
     all_discovered_links = set()
     for res in results:
@@ -89,7 +104,8 @@ async def async_search(
         context: BrowserContext,
         url: str, depth: int = 10,
         url_filter: Callable[[str], bool] | None = None,
-        num_workers: int = 20
+        num_workers: int = 20,
+        pbar: bool = False
 ) -> Set[str]:
     """Asynchronously follows links up to a specified depth using Playwright."""
     if depth <= 0:
@@ -104,7 +120,12 @@ async def async_search(
     discovered = {url}
     queue = {url}
 
-    for current_depth in range(depth):
+    if pbar:
+        depths = trange(depth, desc="Crawling Depth", unit="depth", leave=True) if pbar else range(depth)
+    else:
+        depths = range(depth)
+
+    for current_depth in depths:
         if not queue:
             logger.info("No new URLs to visit. Stopping crawl.")
             break
@@ -116,6 +137,7 @@ async def async_search(
             context=context,
             urls=queue,
             semaphore=semaphore,
+            pbar=pbar
         )
 
         # Filter the urls
@@ -124,7 +146,6 @@ async def async_search(
 
         # Remove urls that we have already visited
         new_links.difference_update(discovered)
-
 
         # Add the newly validated links.
         discovered.update(new_links)
