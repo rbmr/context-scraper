@@ -47,7 +47,7 @@ async def get_browser_context(
         logger.info("Browser closed.")
 
 
-async def main():
+async def run_browser():
     async with async_playwright() as p:
         async with get_browser_context(p, headless=False, save_on_exit=True) as context:
             page = await context.new_page()
@@ -55,4 +55,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_browser())
