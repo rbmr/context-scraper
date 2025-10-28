@@ -1,29 +1,32 @@
 import asyncio
 import logging
-from typing import Set, Callable, Iterable
+from typing import Callable, Iterable, Set
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
-from playwright.async_api import BrowserContext, Page, Error as PlaywrightError
-from tqdm.auto import trange
+from playwright.async_api import BrowserContext
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Page
 from tqdm.asyncio import tqdm as async_tqdm
+from tqdm.auto import trange
 
 logger = logging.getLogger(__name__)
 
+
 def parse_links(content: str, url: str) -> set[str]:
     links = set()
-    soup = BeautifulSoup(content, 'lxml')
-    for a_tag in soup.find_all('a', href=True):
-        href = a_tag['href'].strip()
-        if not href or href.startswith(('#', 'javascript:', 'mailto:', 'tel:')):
+    soup = BeautifulSoup(content, "lxml")
+    for a_tag in soup.find_all("a", href=True):
+        href = a_tag["href"].strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
             continue
 
         full_link = urljoin(url, href)
         parsed_url = urlparse(full_link)
 
-        if parsed_url.scheme in ('http', 'https'):
+        if parsed_url.scheme in ("http", "https"):
             # remove fragment
-            cleaned_url = parsed_url._replace(fragment='')
+            cleaned_url = parsed_url._replace(fragment="")
             cleaned_link = urlunparse(cleaned_url)
             # remove trailing slash
             cleaned_link = cleaned_link.rstrip("/")
@@ -31,6 +34,7 @@ def parse_links(content: str, url: str) -> set[str]:
             links.add(cleaned_link)
 
     return links
+
 
 async def async_get_links(context: BrowserContext, url: str) -> Set[str]:
     """
@@ -47,8 +51,8 @@ async def async_get_links(context: BrowserContext, url: str) -> Set[str]:
         if not response.ok:
             logger.error(f"HTTP error {response.status} for URL {url}")
             return set()
-        content_type = response.headers.get('content-type', '')
-        if 'text/html' not in content_type:
+        content_type = response.headers.get("content-type", "")
+        if "text/html" not in content_type:
             logger.warning(f"Skipping non-HTML content at {url} (Type: {content_type})")
             return set()
         content = await page.content()
@@ -65,11 +69,12 @@ async def async_get_links(context: BrowserContext, url: str) -> Set[str]:
         if page is not None and not page.is_closed():
             await page.close()
 
+
 async def async_multi_get_links(
-        context: BrowserContext,
-        urls: Iterable[str],
-        semaphore: asyncio.Semaphore,
-        pbar: bool = False,
+    context: BrowserContext,
+    urls: Iterable[str],
+    semaphore: asyncio.Semaphore,
+    pbar: bool = False,
 ) -> Set[str]:
     """
     Creates and runs scraping tasks concurrently, constrained by the semaphore.
@@ -100,28 +105,32 @@ async def async_multi_get_links(
 
     return all_discovered_links
 
+
 async def async_search(
-        context: BrowserContext,
-        url: str, depth: int = 10,
-        url_filter: Callable[[str], bool] | None = None,
-        num_workers: int = 20,
-        pbar: bool = False
+    context: BrowserContext,
+    url: str,
+    depth: int = 10,
+    url_filter: Callable[[str], bool] | None = None,
+    num_workers: int = 20,
+    pbar: bool = False,
 ) -> Set[str]:
     """Asynchronously follows links up to a specified depth using Playwright."""
     if depth <= 0:
         return set()
-    url = url.rstrip('/')
+    url = url.rstrip("/")
     if url_filter is not None and not url_filter(url):
         logger.warning(f"Initial URL {url} does not match the filter.")
         return set()
 
-    logger.info(f"Starting async crawl from {url} to depth {depth} with {num_workers} concurrent workers.")
+    logger.info(
+        f"Starting async crawl from {url} to depth {depth} with {num_workers} concurrent workers."
+    )
     semaphore = asyncio.Semaphore(num_workers)
     discovered = {url}
     queue = {url}
 
     if pbar:
-        depths = trange(depth, desc="Crawling Depth", unit="depth", leave=True) if pbar else range(depth)
+        depths = trange(depth, desc="Crawling Depth", unit="depth", leave=True)
     else:
         depths = range(depth)
 
@@ -134,10 +143,7 @@ async def async_search(
 
         # Retrieve all connected urls
         new_links = await async_multi_get_links(
-            context=context,
-            urls=queue,
-            semaphore=semaphore,
-            pbar=pbar
+            context=context, urls=queue, semaphore=semaphore, pbar=pbar
         )
 
         # Filter the urls

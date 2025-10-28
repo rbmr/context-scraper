@@ -1,16 +1,17 @@
 import asyncio
-import tempfile
 import logging
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
-from playwright.async_api import Page, BrowserContext
+from playwright.async_api import BrowserContext, Page
 from pypdf import PdfWriter
 
 from src.constants import SRC_DIR
 
 DEFAULT_OUTPUT = SRC_DIR / "output.pdf"
 logger = logging.getLogger(__name__)
+
 
 def merge_pdfs(src: List[Path], dest: Path) -> None:
     """Merge multiple PDF files into a single PDF."""
@@ -47,9 +48,11 @@ def merge_pdfs(src: List[Path], dest: Path) -> None:
     finally:
         pdf_merger.close()
 
+
 async def create_pdf_from_url(
-        browser: BrowserContext,
-        url: str, dest: Path,
+    browser: BrowserContext,
+    url: str,
+    dest: Path,
 ) -> Optional[Path]:
     """
     Creates a PDF from a URL.
@@ -60,11 +63,7 @@ async def create_pdf_from_url(
     try:
         page = await browser.new_page()
         await page.goto(url, wait_until="networkidle", timeout=60_000)
-        await page.pdf(
-            path=str(dest),
-            format="A4",
-            print_background=True
-        )
+        await page.pdf(path=str(dest), format="A4", print_background=True)
         logger.info(f"Successfully created PDF: {dest}")
         return dest
     except Exception as e:
@@ -74,7 +73,10 @@ async def create_pdf_from_url(
         if page is not None and not page.is_closed():
             await page.close()
 
-async def create_pdf_from_urls(browser: BrowserContext, urls: List[str], output_file: Path = DEFAULT_OUTPUT):
+
+async def create_pdf_from_urls(
+    browser: BrowserContext, urls: List[str], output_file: Path = DEFAULT_OUTPUT
+):
     """Creates multiple PDFs from a list of URLs in parallel and concatenates them."""
     with tempfile.TemporaryDirectory() as temp_dir:
         logging.info(f"Using temporary directory for PDFs: {temp_dir}")

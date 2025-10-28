@@ -9,12 +9,13 @@ from src.constants import STATE_FILE
 
 logger = logging.getLogger(__name__)
 
+
 @asynccontextmanager
 async def get_browser_context(
-        p: Playwright,
-        headless: bool,
-        storage_state: Path = STATE_FILE,
-        save_on_exit: bool = False
+    p: Playwright,
+    headless: bool,
+    storage_state: Path = STATE_FILE,
+    save_on_exit: bool = False,
 ):
     """
     An async context manager to provide a Playwright browser context.
@@ -45,11 +46,13 @@ async def get_browser_context(
         await browser.close()
         logger.info("Browser closed.")
 
+
 async def main():
     async with async_playwright() as p:
         async with get_browser_context(p, headless=False, save_on_exit=True) as context:
             page = await context.new_page()
             await page.pause()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
