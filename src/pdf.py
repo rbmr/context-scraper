@@ -8,6 +8,8 @@ from playwright.async_api import BrowserContext, Page
 from pypdf import PdfWriter
 from tqdm.asyncio import tqdm as async_tqdm
 
+from src.async_utils import run_async_tasks
+from src.browser import open_page
 from src.constants import SRC_DIR
 
 DEFAULT_OUTPUT = SRC_DIR / "output.pdf"
@@ -60,26 +62,22 @@ async def create_pdf_from_url(
     Returns the destination path on success, None on failure.
     """
     logger.info(f"Creating PDF from URL: {url}")
-    page: Optional[Page] = None
-    try:
-        page = await browser.new_page()
-        await page.goto(url, wait_until="networkidle", timeout=60_000)
-        await page.pdf(path=str(dest), format="A4", print_background=True)
-        logger.info(f"Successfully created PDF: {dest}")
-        return dest
-    except Exception as e:
-        logger.error(f"Failed to create PDF from URL {url}. Error: {e}")
-        return None
-    finally:
-        if page is not None and not page.is_closed():
-            await page.close()
-
+    async with open_page(browser) as page:
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=60_000)
+            await page.pdf(path=str(dest), format="A4", print_background=True)
+            logger.info(f"Successfully created PDF: {dest}")
+            return dest
+        except Exception as e:
+            logger.error(f"Failed to create PDF from URL {url}. Error: {e}")
+            return None
 
 async def create_pdf_from_urls(
     browser: BrowserContext,
     urls: List[str],
     output_file: Path = DEFAULT_OUTPUT,
     pbar: bool = False,
+    limit: int = 20,
 ):
     """Creates multiple PDFs from a list of URLs in parallel and concatenates them."""
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -91,18 +89,14 @@ async def create_pdf_from_urls(
             temp_pdf_path = temp_dir_path / f"temp_{i}.pdf"
             tasks.append(create_pdf_from_url(browser, url, temp_pdf_path))
 
-        logger.info(f"Creating {len(tasks)} PDFs in parallel...")
-
-        if pbar:
-            results = await async_tqdm.gather(
-                *tasks,
-                desc=f"Creating PDFs",
-                total=len(tasks),
-                unit="pdf",
-                leave=False,
-            )
-        else:
-            results = await asyncio.gather(*tasks)
+        results = await run_async_tasks(
+            tasks,
+            limit=limit,
+            pbar=pbar,
+            desc="Creating PDFs",
+            unit="pdf",
+            leave=False
+        )
 
         logger.info("All PDF creation tasks complete.")
 

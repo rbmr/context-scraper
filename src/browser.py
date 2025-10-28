@@ -2,8 +2,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, AsyncGenerator
 
-from playwright.async_api import Playwright, async_playwright
+from playwright.async_api import Playwright, async_playwright, BrowserContext, Page
 
 from src.constants import STATE_FILE
 
@@ -16,7 +17,7 @@ async def get_browser_context(
     headless: bool,
     storage_state: Path = STATE_FILE,
     save_on_exit: bool = False,
-):
+) -> AsyncGenerator[BrowserContext, None]:
     """
     An async context manager to provide a Playwright browser context.
 
@@ -46,13 +47,25 @@ async def get_browser_context(
         await browser.close()
         logger.info("Browser closed.")
 
+@asynccontextmanager
+async def open_page(context: BrowserContext) -> AsyncGenerator[Page, Any]:
+    """An async context manager to provide a Playwright page.
+
+    It opens a new page and ensures it's closed upon exit.
+    """
+    page: Page | None = None
+    try:
+        page = await context.new_page()
+        yield page
+    finally:
+        if page is not None and not page.is_closed():
+            await page.close()
 
 async def run_browser():
     async with async_playwright() as p:
         async with get_browser_context(p, headless=False, save_on_exit=True) as context:
-            page = await context.new_page()
-            await page.pause()
-
+            async with open_page(context) as page:
+                await page.pause()
 
 if __name__ == "__main__":
     asyncio.run(run_browser())

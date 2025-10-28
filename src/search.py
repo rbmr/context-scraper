@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from typing import Callable, Iterable, Set
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -7,8 +6,10 @@ from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page
-from tqdm.asyncio import tqdm as async_tqdm
 from tqdm.auto import trange
+
+from src.async_utils import run_async_tasks
+from src.browser import open_page
 
 logger = logging.getLogger(__name__)
 
@@ -41,63 +42,54 @@ async def async_get_links(context: BrowserContext, url: str) -> Set[str]:
     Asynchronously gets all unique, absolute hyperlinks from a URL using httpx and BeautifulSoup.
     """
     logger.info(f"Scraping for links on: {url}")
-    page: Page | None = None
-    try:
-        page = await context.new_page()
-        response = await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-        if not response:
-            logger.error(f"Failed to get response for URL {url}")
+    async with open_page(context) as page:
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
+            if not response:
+                logger.error(f"Failed to get response for URL {url}")
+                return set()
+            if not response.ok:
+                logger.error(f"HTTP error {response.status} for URL {url}")
+                return set()
+            content_type = response.headers.get("content-type")
+            if content_type is None:
+                logger.warning(f"Failed to get content type for URL {url}")
+                return set()
+            if "text/html" not in content_type:
+                logger.warning(f"Skipping non-HTML content at {url} (Type: {content_type})")
+                return set()
+            content = await page.content()
+            links = parse_links(content, url)
+            logger.debug(f"Found {len(links)} unique links on {url}.")
+            return links
+        except PlaywrightError as e:
+            logger.error(f"Playwright error for URL {url}. Error: {e}")
             return set()
-        if not response.ok:
-            logger.error(f"HTTP error {response.status} for URL {url}")
+        except Exception as e:
+            logger.error(f"Unexpected error parsing URL {url}. Error: {e}")
             return set()
-        content_type = response.headers.get("content-type", "")
-        if "text/html" not in content_type:
-            logger.warning(f"Skipping non-HTML content at {url} (Type: {content_type})")
-            return set()
-        content = await page.content()
-        links = parse_links(content, url)
-        logger.debug(f"Found {len(links)} unique links on {url}.")
-        return links
-    except PlaywrightError as e:
-        logger.error(f"Playwright error for URL {url}. Error: {e}")
-        return set()
-    except Exception as e:
-        logger.error(f"Unexpected error parsing URL {url}. Error: {e}")
-        return set()
-    finally:
-        if page is not None and not page.is_closed():
-            await page.close()
-
 
 async def async_multi_get_links(
     context: BrowserContext,
     urls: Iterable[str],
-    semaphore: asyncio.Semaphore,
+    limit: int,
     pbar: bool = False,
 ) -> Set[str]:
     """
-    Creates and runs scraping tasks concurrently, constrained by the semaphore.
+    Creates and runs scraping tasks concurrently.
     """
     if not urls:
         return set()
+    tasks = [async_get_links(context, url) for url in urls]
 
-    async def get_links_with_semaphore(url: str) -> Set[str]:
-        """Wrapper to acquire semaphore before scraping."""
-        async with semaphore:
-            return await async_get_links(context, url)
-
-    tasks = [get_links_with_semaphore(url) for url in urls]
-    if pbar:
-        results = await async_tqdm.gather(
-            *tasks,
-            desc=f"Scraping URLs",
-            total=len(tasks),
-            unit="URL",
-            leave=False,
-        )
-    else:
-        results = await asyncio.gather(*tasks)
+    results = await run_async_tasks(
+        tasks,
+        limit=limit,
+        pbar=pbar,
+        desc=f"Scraping URLs",
+        unit="URL",
+        leave=False,
+    )
 
     all_discovered_links = set()
     for res in results:
@@ -111,10 +103,12 @@ async def async_search(
     url: str,
     depth: int = 10,
     url_filter: Callable[[str], bool] | None = None,
-    num_workers: int = 20,
+    limit: int = 20,
     pbar: bool = False,
 ) -> Set[str]:
-    """Asynchronously follows links up to a specified depth using Playwright."""
+    """
+    Asynchronously follows links up to a specified depth using Playwright.
+    """
     if depth <= 0:
         return set()
     url = url.rstrip("/")
@@ -123,16 +117,15 @@ async def async_search(
         return set()
 
     logger.info(
-        f"Starting async crawl from {url} to depth {depth} with {num_workers} concurrent workers."
+        f"Starting async crawl from {url} to depth {depth} with {limit} concurrent workers."
     )
-    semaphore = asyncio.Semaphore(num_workers)
     discovered = {url}
     queue = {url}
 
-    if pbar:
-        depths = trange(depth, desc="Crawling Depth", unit="depth", leave=True)
-    else:
-        depths = range(depth)
+    depths = (
+        trange(depth, desc="Crawling Depth", unit="depth", leave=True)
+        if pbar else range(depth)
+    )
 
     for current_depth in depths:
         if not queue:
@@ -143,7 +136,7 @@ async def async_search(
 
         # Retrieve all connected urls
         new_links = await async_multi_get_links(
-            context=context, urls=queue, semaphore=semaphore, pbar=pbar
+            context=context, urls=queue, limit=limit, pbar=pbar
         )
 
         # Filter the urls

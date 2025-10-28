@@ -8,7 +8,6 @@ PROJECT_DIR = SRC_DIR.parent
 ENV_PATH = PROJECT_DIR / ".env"
 STATE_FILE = PROJECT_DIR / "state.json"
 
-
 class TqdmLoggingHandler(logging.StreamHandler):
     def __init__(self):
         super().__init__()
