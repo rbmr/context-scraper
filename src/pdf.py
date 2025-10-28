@@ -6,9 +6,9 @@ from typing import List, Optional
 
 from playwright.async_api import BrowserContext, Page
 from pypdf import PdfWriter
+from tqdm.asyncio import tqdm as async_tqdm
 
 from src.constants import SRC_DIR
-from tqdm.asyncio import tqdm as async_tqdm
 
 DEFAULT_OUTPUT = SRC_DIR / "output.pdf"
 logger = logging.getLogger(__name__)
@@ -76,10 +76,10 @@ async def create_pdf_from_url(
 
 
 async def create_pdf_from_urls(
-        browser: BrowserContext,
-        urls: List[str],
-        output_file: Path = DEFAULT_OUTPUT,
-        pbar: bool = False,
+    browser: BrowserContext,
+    urls: List[str],
+    output_file: Path = DEFAULT_OUTPUT,
+    pbar: bool = False,
 ):
     """Creates multiple PDFs from a list of URLs in parallel and concatenates them."""
     with tempfile.TemporaryDirectory() as temp_dir:
