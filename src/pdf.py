@@ -1,20 +1,15 @@
-import asyncio
 import logging
 import tempfile
 from pathlib import Path
 from typing import List, Optional
 
-from playwright.async_api import BrowserContext, Page
+from playwright.async_api import BrowserContext
 from pypdf import PdfWriter
-from tqdm.asyncio import tqdm as async_tqdm
 
-from src.async_utils import run_async_tasks
-from src.browser import open_page
-from src.constants import SRC_DIR
+from src.utils.async_utils import run_async_tasks, PBarConfig
+from src.utils.playwright_utils import open_page
 
-DEFAULT_OUTPUT = SRC_DIR / "output.pdf"
 logger = logging.getLogger(__name__)
-
 
 def merge_pdfs(src: List[Path], dest: Path) -> None:
     """Merge multiple PDF files into a single PDF."""
@@ -27,6 +22,9 @@ def merge_pdfs(src: List[Path], dest: Path) -> None:
             continue
         if not pdf_src.suffix == ".pdf":
             logger.warning(f"Source file {pdf_src} is not a PDF, ignoring.")
+            continue
+        if dest.resolve() == pdf_src.resolve():
+            logger.warning(f"Source file {pdf_src} is same as output file, ignoring.")
             continue
         valid_sources.append(pdf_src)
 
@@ -51,7 +49,6 @@ def merge_pdfs(src: List[Path], dest: Path) -> None:
     finally:
         pdf_merger.close()
 
-
 async def create_pdf_from_url(
     browser: BrowserContext,
     url: str,
@@ -75,7 +72,7 @@ async def create_pdf_from_url(
 async def create_pdf_from_urls(
     browser: BrowserContext,
     urls: List[str],
-    output_file: Path = DEFAULT_OUTPUT,
+    output_file: Path,
     pbar: bool = False,
     limit: int = 20,
 ):
@@ -92,10 +89,11 @@ async def create_pdf_from_urls(
         results = await run_async_tasks(
             tasks,
             limit=limit,
-            pbar=pbar,
-            desc="Creating PDFs",
-            unit="pdf",
-            leave=False
+            pbar=None if not pbar else PBarConfig(
+                desc="Creating PDFs",
+                unit="pdf",
+                leave=False
+            ),
         )
 
         logger.info("All PDF creation tasks complete.")

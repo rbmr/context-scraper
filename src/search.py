@@ -3,16 +3,13 @@ from typing import Callable, Iterable, Set
 from urllib.parse import urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
-from playwright.async_api import BrowserContext
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page
+from httpx import AsyncClient, Response
 from tqdm.auto import trange
 
-from src.async_utils import run_async_tasks
-from src.browser import open_page
+from src.utils.async_utils import PBarConfig
+from src.utils.httpx_utils import httpx_process_urls
 
 logger = logging.getLogger(__name__)
-
 
 def parse_links(content: str, url: str) -> set[str]:
     links = set()
@@ -36,70 +33,64 @@ def parse_links(content: str, url: str) -> set[str]:
 
     return links
 
-
-async def async_get_links(context: BrowserContext, url: str) -> Set[str]:
+async def extract_links(response: Response) -> Set[str]:
     """
-    Asynchronously gets all unique, absolute hyperlinks from a URL using httpx and BeautifulSoup.
+    Processing function for httpx_process_url.
+    Parses links from an httpx response.
     """
-    logger.info(f"Scraping for links on: {url}")
-    async with open_page(context) as page:
-        try:
-            response = await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-            if not response:
-                logger.error(f"Failed to get response for URL {url}")
-                return set()
-            if not response.ok:
-                logger.error(f"HTTP error {response.status} for URL {url}")
-                return set()
-            content_type = response.headers.get("content-type")
-            if content_type is None:
-                logger.warning(f"Failed to get content type for URL {url}")
-                return set()
-            if "text/html" not in content_type:
-                logger.warning(f"Skipping non-HTML content at {url} (Type: {content_type})")
-                return set()
-            content = await page.content()
-            links = parse_links(content, url)
-            logger.debug(f"Found {len(links)} unique links on {url}.")
-            return links
-        except PlaywrightError as e:
-            logger.error(f"Playwright error for URL {url}. Error: {e}")
-            return set()
-        except Exception as e:
-            logger.error(f"Unexpected error parsing URL {url}. Error: {e}")
-            return set()
+    url = str(response.url)
 
-async def async_multi_get_links(
-    context: BrowserContext,
+    # Check content type
+    content_type = response.headers.get("content-type")
+    if content_type is None:
+        logger.warning(f"Failed to get content type for URL {url}")
+        return set()
+    if "text/html" not in content_type:
+        logger.warning(f"Skipping non-HTML content at {url} (Type: {content_type})")
+        return set()
+
+    # Parse content
+    content = response.text
+    links = parse_links(content, url)
+    logger.debug(f"Found {len(links)} unique links on {url} (via HTTPX).")
+    return links
+
+
+async def multi_get_links(
+    client: AsyncClient,
     urls: Iterable[str],
     limit: int,
     pbar: bool = False,
 ) -> Set[str]:
     """
-    Creates and runs scraping tasks concurrently.
+    Creates and runs scraping tasks concurrently using httpx.
     """
     if not urls:
         return set()
-    tasks = [async_get_links(context, url) for url in urls]
 
-    results = await run_async_tasks(
-        tasks,
+    # Get the results
+    results = await httpx_process_urls(
+        client=client,
+        urls=list(urls),
+        processing_func=extract_links,
         limit=limit,
-        pbar=pbar,
-        desc=f"Scraping URLs",
-        unit="URL",
-        leave=False,
+        pbar=(
+            PBarConfig(desc="Scraping URLs", unit="URL", leave=False)
+            if pbar
+            else None
+        )
     )
 
+    # Flatten the results.
     all_discovered_links = set()
-    for res in results:
-        all_discovered_links.update(res)
+    for link_set in results:
+        all_discovered_links.update(link_set)
 
     return all_discovered_links
 
 
 async def async_search(
-    context: BrowserContext,
+    client: AsyncClient,
     url: str,
     depth: int = 10,
     url_filter: Callable[[str], bool] | None = None,
@@ -107,7 +98,7 @@ async def async_search(
     pbar: bool = False,
 ) -> Set[str]:
     """
-    Asynchronously follows links up to a specified depth using Playwright.
+    Asynchronously follows links up to a specified depth using HTTPX.
     """
     if depth <= 0:
         return set()
@@ -117,7 +108,7 @@ async def async_search(
         return set()
 
     logger.info(
-        f"Starting async crawl from {url} to depth {depth} with {limit} concurrent workers."
+        f"Starting HTTPX crawl from {url} to depth {depth} with {limit} concurrent workers."
     )
     discovered = {url}
     queue = {url}
@@ -134,9 +125,8 @@ async def async_search(
 
         logger.info(f"Depth {current_depth + 1}/{depth}. Visiting {len(queue)} URLs.")
 
-        # Retrieve all connected urls
-        new_links = await async_multi_get_links(
-            context=context, urls=queue, limit=limit, pbar=pbar
+        new_links = await multi_get_links(
+            client=client, urls=queue, limit=limit, pbar=pbar
         )
 
         # Filter the urls
