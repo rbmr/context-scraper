@@ -3,7 +3,7 @@ from typing import List, Set, Callable
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
 
 from src.utils.async_utils import PBarConfig
 from src.utils.httpx_utils import httpx_process_urls
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 def parse_links(content: str, url: str) -> set[str]:
     links = set()
-    soup = BeautifulSoup(content, "lxml")
+    soup = soup = BeautifulSoup(content, "lxml", parse_only=SoupStrainer("a", href=True))
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"].strip()
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
@@ -25,8 +25,6 @@ def parse_links(content: str, url: str) -> set[str]:
             # remove fragment
             cleaned_url = parsed_url._replace(fragment="")
             cleaned_link = urlunparse(cleaned_url)
-            # remove trailing slash
-            cleaned_link = cleaned_link.rstrip("/")
 
             links.add(cleaned_link)
 

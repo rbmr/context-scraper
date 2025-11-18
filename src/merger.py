@@ -45,7 +45,7 @@ class Merger:
                 file_size = f.stat().st_size
 
                 # Check if adding this file exceeds limit
-                if (current_batch_size + file_size > self.config.max_bytes) and (files_in_batch > 0):
+                if ((current_batch_size + file_size > self.config.max_bytes) or (files_in_batch >= 50)) and (files_in_batch > 0):
                     self._write_pdf(current_writer, part_num)
                     part_num += 1
                     current_writer = PdfWriter()
@@ -106,7 +106,8 @@ class Merger:
         fname = f"{self.config.output_name}_part{part}{ext}"
         out_path = self.config.output_dir / fname
         try:
-            out_path.write_text("".join(content_list), encoding="utf-8")
+            with out_path.open("w", encoding="utf-8") as f:
+                [f.write(c) for c in content_list]
             logger.info(f"Saved: {out_path}")
         except Exception as e:
             logger.error(f"Failed to write text file {out_path}: {e}")

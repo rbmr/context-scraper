@@ -116,9 +116,7 @@ class ContentFetcher:
             raise ValueError("Browser context required for PDF-Rendered")
         async with open_page(context) as page:
             try:
-                await page.goto(url, wait_until="networkidle", timeout=30000)
-                # Inject some CSS to ensure background prints if needed?
-                # For now, standard pdf print
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                 await page.pdf(path=str(path), format="A4")
                 return path
             except Exception as e:
