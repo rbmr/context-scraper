@@ -1,26 +1,31 @@
-[tool.poetry]
+[project]
 name = "context-scraper"
 version = "0.1.0"
 description = ""
-authors = ["Robert Mertens"]
+authors = [{ name = "Robert Mertens" }]
+requires-python = ">=3.12,<4"
 readme = "README.md"
+dependencies = [
+    "playwright>=1.55.0,<2",
+    "pypdf>=6.1.1,<7",
+    "beautifulsoup4>=4.14.2,<5",
+    "lxml>=6.0.2,<7",
+    "tqdm>=4.67.1,<5",
+    "httpx>=0.28.1,<0.29",
+    "pydantic>=2.12.4,<3",
+]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-playwright = "^1.55.0"
-pypdf = "^6.1.1"
-beautifulsoup4 = "^4.14.2"
-lxml = "^6.0.2"
-tqdm = "^4.67.1"
-httpx = "^0.28.1"
-pydantic = "^2.12.4"
+[tool.hatch.build.targets.wheel]
+packages = ["src"]  # Change "src" to your actual folder name
 
-[tool.poetry.group.dev.dependencies]
-deptry = "^0.23.1"
-isort = "^7.0.0"
-pytest = "^8.4.2"
-black = "^25.9.0"
+[dependency-groups]
+dev = [
+    "deptry>=0.23.1,<0.24",
+    "isort>=7.0.0,<8",
+    "pytest>=8.4.2,<9",
+    "black>=25.9.0,<26",
+]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
