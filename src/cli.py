@@ -78,6 +78,7 @@ def get_user_inputs(args: argparse.Namespace) -> RunConfig:
 
     # 5. MD Strategy
     md_strat = args.md_strategy
+    md_strat = MarkdownStrategy.ONLY_HTML if out_type == OutputType.PDF else md_strat
     if not md_strat:
         print("Markdown Strategy Options: " + ", ".join([e.value for e in MarkdownStrategy]))
         while True:
