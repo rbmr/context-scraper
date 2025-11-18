@@ -5,10 +5,9 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import httpx
-from bs4 import BeautifulSoup
 from playwright.async_api import BrowserContext
-
-from src.config import RunConfig, OutputType
+from bs4 import BeautifulSoup
+from src.config import RunConfig, OutputType, MarkdownStrategy
 from src.utils.playwright_utils import open_page
 
 logger = logging.getLogger(__name__)
@@ -20,43 +19,62 @@ class BaseFetcher(ABC):
         self.temp_dir = temp_dir
 
     @abstractmethod
-    async def handle(self, url: str, content: Optional[str], dest: Path, context: Optional[BrowserContext]) -> Optional[
-        Path]:
+    async def handle(self, url: str, content: Optional[str], dest: Path, context: Optional[BrowserContext],
+                     client: Optional[httpx.AsyncClient]) -> Optional[Path]:
         """Process a URL and return the path to the saved temporary file."""
         pass
 
 
-class TextFetcher(BaseFetcher):
-    async def handle(self, url: str, content: Optional[str], dest: Path, context: Optional[BrowserContext]) -> Optional[
-        Path]:
-        if not content:
-            return None
-
-        soup = BeautifulSoup(content, "lxml")
-        for script in soup(["script", "style", "nav", "footer"]):
-            script.extract()
-        text_content = soup.get_text(separator="\n\n")
-
-        out_path = dest.with_suffix(".txt")
-        out_path.write_text(text_content, encoding="utf-8")
-        return out_path
-
-
 class MarkdownFetcher(BaseFetcher):
-    async def handle(self, url: str, content: Optional[str], dest: Path, context: Optional[BrowserContext]) -> Optional[
-        Path]:
-        # In a real scenario, you might run html2text here
-        # For now, we save the raw content or lightly processed content
-        if not content:
-            return None
+    async def handle(self, url: str, content: Optional[str], dest: Path, context: Optional[BrowserContext],
+                     client: Optional[httpx.AsyncClient]) -> Optional[Path]:
+        strat = self.config.md_strategy
         out_path = dest.with_suffix(".md")
-        out_path.write_text(content, encoding="utf-8")
-        return out_path
+
+        # Helper to clean URL and add .md
+        md_url = f"{url.rstrip('/')}.md"
+
+        # 1. ONLY_HTML: Just dump the HTML we already have
+        if strat == MarkdownStrategy.ONLY_HTML:
+            if not content: return None
+            out_path.write_text(content, encoding="utf-8")
+            return out_path
+
+        # 2. ONLY_MD: Try to fetch .md, ignore HTML content
+        if strat == MarkdownStrategy.ONLY_MD:
+            if not client: return None
+            try:
+                resp = await client.get(md_url, timeout=3.0)
+                if resp.status_code == 200:
+                    out_path.write_text(resp.text, encoding="utf-8")
+                    return out_path
+            except Exception:
+                pass
+            return None  # Failed to find MD, output nothing
+
+        # 3. PRIORITIZE_MD: Try MD first, fallback to HTML
+        if strat == MarkdownStrategy.PRIORITIZE_MD:
+            # Try MD fetch
+            if client:
+                try:
+                    resp = await client.get(md_url, timeout=2.0)
+                    if resp.status_code == 200:
+                        out_path.write_text(resp.text, encoding="utf-8")
+                        return out_path
+                except Exception:
+                    pass
+
+                    # Fallback to HTML if MD failed
+            if content:
+                out_path.write_text(content, encoding="utf-8")
+                return out_path
+
+            return None
 
 
 class PdfRenderedFetcher(BaseFetcher):
-    async def handle(self, url: str, content: Optional[str], dest: Path, context: Optional[BrowserContext]) -> Optional[
-        Path]:
+    async def handle(self, url: str, content: Optional[str], dest: Path, context: Optional[BrowserContext],
+                     client: Optional[httpx.AsyncClient]) -> Optional[Path]:
         if not context:
             logger.error("Browser context required for PDF Rendering")
             return None
@@ -73,12 +91,10 @@ class PdfRenderedFetcher(BaseFetcher):
 
 
 def get_fetcher_strategy(config: RunConfig, temp_dir: Path) -> BaseFetcher:
-    if config.output_type == OutputType.PDF_RENDERED:
+    if config.output_type == OutputType.PDF:
         return PdfRenderedFetcher(config, temp_dir)
-    elif config.output_type == OutputType.MARKDOWN:
-        return MarkdownFetcher(config, temp_dir)
     else:
-        return TextFetcher(config, temp_dir)
+        return MarkdownFetcher(config, temp_dir)
 
 
 async def run_fetcher_worker(
@@ -86,7 +102,8 @@ async def run_fetcher_worker(
         merge_queue: asyncio.Queue,
         config: RunConfig,
         temp_dir: Path,
-        context: Optional[BrowserContext]
+        context: Optional[BrowserContext],
+        client: Optional[httpx.AsyncClient]  # <--- Added Client
 ):
     fetcher = get_fetcher_strategy(config, temp_dir)
     file_counter = 0
@@ -94,7 +111,6 @@ async def run_fetcher_worker(
     while True:
         item = await queue.get()
         if item is None:
-            # Propagate the finish signal to the merger
             await merge_queue.put(None)
             queue.task_done()
             break
@@ -104,7 +120,8 @@ async def run_fetcher_worker(
         file_counter += 1
 
         try:
-            path = await fetcher.handle(url, content, dest, context)
+            # Pass client to handle
+            path = await fetcher.handle(url, content, dest, context, client)
             if path:
                 await merge_queue.put(path)
         except Exception as e:

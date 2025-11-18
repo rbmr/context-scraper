@@ -54,12 +54,13 @@ async def run_process(config: RunConfig):
             # B. Fetcher (Transformer)
             # Needs Playwright context if PDF output is requested
             async def launch_fetcher():
-                if config.output_type == OutputType.PDF_RENDERED:
+                if config.output_type == OutputType.PDF:
                     async with async_playwright() as p:
                         async with get_browser_context(p, headless=True, storage_state=STATE_FILE) as context:
-                            await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, context)
+                            # Pass 'client' here
+                            await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, context, client)
                 else:
-                    await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, None)
+                    await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, None, client)
 
             fetcher_task = asyncio.create_task(launch_fetcher())
 

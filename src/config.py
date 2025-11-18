@@ -5,9 +5,7 @@ from pydantic import BaseModel, Field
 
 
 class OutputType(str, Enum):
-    PDF_RENDERED = "pdf-rendered"  # Full render of page
-    PDF_TEXT = "pdf-text"  # Text extraction -> PDF
-    TXT = "txt"
+    PDF = "pdf"
     MARKDOWN = "md"
 
 

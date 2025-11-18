@@ -108,12 +108,10 @@ class PdfMerger(BaseMerger):
 
 
 def get_merger(config: RunConfig) -> BaseMerger:
-    if config.output_type == OutputType.PDF_RENDERED:
+    if config.output_type == OutputType.PDF:
         return PdfMerger(config)
-    elif config.output_type == OutputType.MARKDOWN:
-        return TextMerger(config, ".md")
     else:
-        return TextMerger(config, ".txt")
+        return TextMerger(config, ".md")
 
 
 async def run_merger_worker(queue: asyncio.Queue, config: RunConfig):
