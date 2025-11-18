@@ -56,10 +56,13 @@ def get_user_inputs(args: argparse.Namespace) -> RunConfig:
 
     # 3. Output Directory
     out_dir_str = args.output_dir
-    if not out_dir_str:
-        out_dir_str = input(f"Output Directory [Default: {Path.cwd()}]: ").strip()
 
-    output_dir = Path(out_dir_str) if out_dir_str else Path.cwd()
+    default_folder = Path.cwd() / sanitize_filename(urlparse(start_url).netloc)
+
+    if not out_dir_str:
+        out_dir_str = input(f"Output Directory [Default: {default_folder}]: ").strip()
+
+    output_dir = Path(out_dir_str) if out_dir_str else default_folder
 
     # 4. Output Type
     out_type = args.output_type
