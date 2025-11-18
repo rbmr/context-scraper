@@ -100,7 +100,7 @@ def get_user_inputs(args: argparse.Namespace) -> RunConfig:
         output_name=output_name,
         output_type=out_type,
         md_strategy=md_strat,
-        max_depth=args.max_depth,
+        max_urls=args.max_urls,
         max_filesize_mb=args.max_filesize,
         concurrency_limit=args.concurrency
     )
@@ -113,7 +113,7 @@ def parse_args():
     parser.add_argument("--output-dir", help="Output directory")
     parser.add_argument("--output-type", choices=[e.value for e in OutputType], help="Output format")
     parser.add_argument("--md-strategy", choices=[e.value for e in MarkdownStrategy], help="Markdown checking strategy")
-    parser.add_argument("--max-depth", type=int, default=10, help="Crawling depth (default: 10)")
+    parser.add_argument("--max-urls", type=int, default=500, help="Max URLs to crawl (default: 500)")
     parser.add_argument("--max-filesize", type=int, default=99, help="Max filesize per output in MB (default: 99)")
     parser.add_argument("--concurrency", type=int, default=20, help="Task concurrency limit")
 

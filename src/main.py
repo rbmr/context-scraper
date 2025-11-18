@@ -1,7 +1,5 @@
-# src/main.py
 import asyncio
 import logging.config
-import shutil
 import tempfile
 from pathlib import Path
 
@@ -11,69 +9,75 @@ from playwright.async_api import async_playwright
 from src.cli import parse_args, get_user_inputs, interactive_auth_check
 from src.config import RunConfig, OutputType
 from src.constants import LOGGING_CONFIG, STATE_FILE
-from src.crawler import crawl_for_urls
-from src.fetcher import ContentFetcher
-from src.merger import Merger
 from src.utils.playwright_utils import get_browser_context
 from src.utils.httpx_utils import load_cookies_from_state
+from src.fetcher import run_fetcher_worker
+from src.merger import run_merger_worker
+from src.crawler import run_crawler
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
 
+
 async def run_process(config: RunConfig):
     logger.info(f"Starting job: {config.output_name}")
-    logger.info(f"Target: {config.start_url} (Matches: {config.allowed_prefixes})")
 
-    # 1. Setup HTTPX Client (Fast Crawling)
+    # 1. Setup Queues
+    fetch_queue = asyncio.Queue()
+    merge_queue = asyncio.Queue()
+
+    # 2. Setup Resources
     cookies = load_cookies_from_state(STATE_FILE)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
 
     async with httpx.AsyncClient(cookies=cookies, follow_redirects=True, timeout=20.0, headers=headers) as client:
-
-        # Pipeline Setup
-        queue = asyncio.Queue()
-
         with tempfile.TemporaryDirectory() as temp_dir_str:
             temp_dir = Path(temp_dir_str)
-            fetcher = ContentFetcher(config, temp_dir)
-            files = []
 
-            # Define Consumer Wrapper to handle Context if needed
-            async def run_consumer():
+            # 3. Define Pipeline Tasks
+
+            # A. Crawler (Producer)
+            crawler_task = asyncio.create_task(
+                run_crawler(
+                    client=client,
+                    start_url=config.start_url,
+                    allowed_prefixes=config.allowed_prefixes,
+                    max_urls=config.max_urls,
+                    fetch_queue=fetch_queue,
+                    limit=config.concurrency_limit
+                )
+            )
+
+            # B. Fetcher (Transformer)
+            # Needs Playwright context if PDF output is requested
+            async def launch_fetcher():
                 if config.output_type == OutputType.PDF_RENDERED:
                     async with async_playwright() as p:
                         async with get_browser_context(p, headless=True, storage_state=STATE_FILE) as context:
-                            return await fetcher.process_queue(queue, client, context)
+                            await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, context)
                 else:
-                    return await fetcher.process_queue(queue, client, None)
+                    await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, None)
 
-            # Start Consumer
-            consumer_task = asyncio.create_task(run_consumer())
+            fetcher_task = asyncio.create_task(launch_fetcher())
 
-            # 2. Crawl (Producer Phase)
-            await crawl_for_urls(
-                client=client,
-                start_url=config.start_url,
-                allowed_prefixes=config.allowed_prefixes,
-                max_depth=config.max_depth,
-                process_queue=queue,
-                limit=config.concurrency_limit
-            )
+            # C. Merger (Consumer)
+            merger_task = asyncio.create_task(run_merger_worker(merge_queue, config))
 
-            # Signal End of Crawl
-            await queue.put(None)
-            files = await consumer_task
+            # 4. Wait for pipeline completion
+            # We await the crawler first. Once it finishes, it puts None in fetch_queue.
+            await crawler_task
+            logger.info("Crawler finished. Waiting for fetcher...")
 
-            # 3. Merge (Output Phase)
-            if files:
-                merger = Merger(config)
-                merger.merge(files)
-            else:
-                logger.warning("No content was successfully fetched.")
+            # Fetcher sees None, finishes work, puts None in merge_queue.
+            await fetcher_task
+            logger.info("Fetcher finished. Waiting for merger...")
 
+            # Merger sees None, flushes, and exits.
+            await merger_task
+            logger.info("Merger finished. Job Complete.")
 async def main():
     # Parse CLI Flags
     args = parse_args()

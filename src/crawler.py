@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from typing import List, Set, Callable, Tuple, Optional
+from typing import List, Set, Tuple, Optional
 from urllib.parse import urljoin, urlparse, urlunparse
 import httpx
 from bs4 import BeautifulSoup, SoupStrainer
@@ -10,91 +10,76 @@ from src.utils.httpx_utils import httpx_process_urls
 
 logger = logging.getLogger(__name__)
 
+
 def parse_links(content: str, url: str) -> set[str]:
     links = set()
-    soup = soup = BeautifulSoup(content, "lxml", parse_only=SoupStrainer("a", href=True))
+    soup = BeautifulSoup(content, "lxml", parse_only=SoupStrainer("a", href=True))
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"].strip()
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
             continue
-
         full_link = urljoin(url, href)
         parsed_url = urlparse(full_link)
-
         if parsed_url.scheme in ("http", "https"):
-            # remove fragment
             cleaned_url = parsed_url._replace(fragment="")
-            cleaned_link = urlunparse(cleaned_url)
-
-            links.add(cleaned_link)
-
+            links.add(urlunparse(cleaned_url))
     return links
 
+
 async def extract_links_task(response: httpx.Response) -> Tuple[str, Set[str], Optional[str]]:
-    """
-    Worker task: extracts links from a single response. Returns (url, links, content).
-    """
     url = str(response.url)
-    # Simple content type check
     ctype = response.headers.get("content-type", "")
     if "text/html" not in ctype:
         return url, set(), None
-
     return url, parse_links(response.text, url), response.text
 
 
-async def crawl_for_urls(
+async def run_crawler(
         client: httpx.AsyncClient,
         start_url: str,
         allowed_prefixes: List[str],
-        max_depth: int,
-        process_queue: asyncio.Queue,
+        max_urls: int,
+        fetch_queue: asyncio.Queue,
         limit: int = 20
-) -> List[str]:
-    """
-    Performs a BFS crawl to find all unique URLs matching the prefixes.
-    """
-    logger.info(f"Starting crawl from {start_url} (Depth: {max_depth})")
+):
+    logger.info(f"Starting crawl from {start_url} (Max URLs: {max_urls})")
 
     def url_filter(u: str) -> bool:
         return any(u.startswith(p) for p in allowed_prefixes)
 
     discovered = {start_url}
-    queue = {start_url}
+    to_visit = {start_url}
+    visited_count = 0
 
-    # Reuse pbar config style
     pbar_cfg = PBarConfig(desc="Crawling", unit="url", leave=True)
 
-    for depth in range(max_depth):
-        if not queue:
-            break
+    while to_visit and visited_count < max_urls:
+        # Grab a batch of URLs to process, up to the remaining limit
+        batch_size = min(len(to_visit), max_urls - visited_count)
+        current_batch = list(to_visit)[:batch_size]
 
-        logger.info(f"Depth {depth + 1}: Processing {len(queue)} URLs...")
+        # Remove current batch from to_visit immediately so we don't loop
+        to_visit = set(list(to_visit)[batch_size:])
 
-        # Fetch all pages in queue concurrently
         results = await httpx_process_urls(
             client=client,
-            urls=list(queue),
+            urls=current_batch,
             processing_func=extract_links_task,
             limit=limit,
             pbar=pbar_cfg
         )
 
-        # Aggregate new links
-        next_queue = set()
         for url, links, content in results:
-            next_queue.update(links)
+            visited_count += 1
+            # Push to Fetcher Pipeline
             if content:
-                process_queue.put_nowait((url, content))
+                await fetch_queue.put((url, content))
 
-        # Filter
-        next_queue = {u for u in next_queue if url_filter(u)}
+            # Process new links
+            new_links = {u for u in links if url_filter(u) and u not in discovered}
+            discovered.update(new_links)
+            to_visit.update(new_links)
 
-        # Remove already seen
-        next_queue.difference_update(discovered)
-
-        discovered.update(next_queue)
-        queue = next_queue
-
-    logger.info(f"Crawl complete. Found {len(discovered)} unique URLs.")
-    return sorted(list(discovered))
+    logger.info(f"Crawl complete. Visited {visited_count} URLs.")
+    # Signal end of crawling to the fetcher
+    await fetch_queue.put(None)

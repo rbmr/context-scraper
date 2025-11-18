@@ -1,68 +1,99 @@
+import asyncio
 import logging
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List
 
 from pypdf import PdfWriter
-
-from src.config import RunConfig
+from src.config import RunConfig, OutputType
 
 logger = logging.getLogger(__name__)
 
 
-class Merger:
+class BaseMerger(ABC):
     def __init__(self, config: RunConfig):
         self.config = config
-
-    def merge(self, source_files: List[Path]):
-        """
-        Dispatches to specific merge logic based on file type.
-        """
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        self.buffer_size = 0
+        self.part_num = 1
+        self.buffer = []
 
-        if not source_files:
-            logger.warning("No files to merge.")
-            return
+    @abstractmethod
+    def add(self, file_path: Path):
+        """Add a file to the merge buffer."""
+        pass
 
-        ext = source_files[0].suffix
+    @abstractmethod
+    def flush(self):
+        """Write current buffer to disk."""
+        pass
 
-        logger.info(f"Merging {len(source_files)} files of type {ext}...")
+    def close(self):
+        """Final flush."""
+        if self.buffer:
+            self.flush()
 
-        if ext == ".pdf":
-            self._merge_pdfs(source_files)
-        else:
-            # .txt or .md
-            self._merge_text_files(source_files, ext)
 
-    def _merge_pdfs(self, files: List[Path]):
-        part_num = 1
-        current_writer = PdfWriter()
-        current_batch_size = 0
-        files_in_batch = 0
+class TextMerger(BaseMerger):
+    def __init__(self, config: RunConfig, ext: str):
+        super().__init__(config)
+        self.ext = ext
+        self.separator = "\n\n" + "=" * 40 + "\n\n"
+        self.sep_size = len(self.separator.encode('utf-8'))
 
-        for f in files:
+    def add(self, file_path: Path):
+        try:
+            f_size = file_path.stat().st_size
+            # Check limit
+            if self.buffer_size + f_size + self.sep_size > self.config.max_bytes:
+                self.flush()
+
+            text = file_path.read_text(encoding="utf-8")
+            self.buffer.append(text)
+            self.buffer_size += f_size + self.sep_size
+        except Exception as e:
+            logger.error(f"Error reading {file_path}: {e}")
+
+    def flush(self):
+        fname = f"{self.config.output_name}_part{self.part_num}{self.ext}"
+        out_path = self.config.output_dir / fname
+        try:
+            with out_path.open("w", encoding="utf-8") as f:
+                for content in self.buffer:
+                    f.write(content)
+                    f.write(self.separator)
+            logger.info(f"Saved: {out_path}")
+        except Exception as e:
+            logger.error(f"Failed to write {out_path}: {e}")
+
+        # Reset
+        self.buffer = []
+        self.buffer_size = 0
+        self.part_num += 1
+
+
+class PdfMerger(BaseMerger):
+    def add(self, file_path: Path):
+        try:
+            f_size = file_path.stat().st_size
+            # Limit by size OR count (PDF merging is memory intensive)
+            if (self.buffer_size + f_size > self.config.max_bytes) or (len(self.buffer) >= 50):
+                self.flush()
+
+            self.buffer.append(file_path)
+            self.buffer_size += f_size
+        except Exception as e:
+            logger.error(f"Error preparing PDF {file_path}: {e}")
+
+    def flush(self):
+        writer = PdfWriter()
+        for f_path in self.buffer:
             try:
-                # Retrieve exact size from OS
-                file_size = f.stat().st_size
-
-                # Check if adding this file exceeds limit
-                if ((current_batch_size + file_size > self.config.max_bytes) or (files_in_batch >= 50)) and (files_in_batch > 0):
-                    self._write_pdf(current_writer, part_num)
-                    part_num += 1
-                    current_writer = PdfWriter()
-                    current_batch_size = 0
-                    files_in_batch = 0
-
-                current_writer.append(f)
-                current_batch_size += file_size
-                files_in_batch += 1
+                writer.append(f_path)
             except Exception as e:
-                logger.error(f"Error appending PDF {f}: {e}")
+                logger.error(f"Error appending PDF {f_path}: {e}")
 
-        if files_in_batch > 0:
-            self._write_pdf(current_writer, part_num)
-
-    def _write_pdf(self, writer: PdfWriter, part: int):
-        fname = f"{self.config.output_name}_part{part}.pdf"
+        fname = f"{self.config.output_name}_part{self.part_num}.pdf"
         out_path = self.config.output_dir / fname
         try:
             with open(out_path, "wb") as f:
@@ -71,43 +102,28 @@ class Merger:
         except Exception as e:
             logger.error(f"Failed to write PDF {out_path}: {e}")
 
-    def _merge_text_files(self, files: List[Path], ext: str):
-        part_num = 1
-        current_content = []
-        current_batch_size = 0
+        self.buffer = []
+        self.buffer_size = 0
+        self.part_num += 1
 
-        separator = "\n\n" + "=" * 40 + "\n\n"
-        sep_size = len(separator.encode('utf-8'))
 
-        for f in files:
-            try:
-                # Retrieve exact size from OS
-                file_size = f.stat().st_size
+def get_merger(config: RunConfig) -> BaseMerger:
+    if config.output_type == OutputType.PDF_RENDERED:
+        return PdfMerger(config)
+    elif config.output_type == OutputType.MARKDOWN:
+        return TextMerger(config, ".md")
+    else:
+        return TextMerger(config, ".txt")
 
-                # Check if adding this file + separator exceeds limit
-                if (current_batch_size + file_size + sep_size > self.config.max_bytes) and (len(current_content) > 0):
-                    self._write_text(current_content, part_num, ext)
-                    part_num += 1
-                    current_content = []
-                    current_batch_size = 0
 
-                # Read content after size check passes
-                text = f.read_text(encoding="utf-8")
-                current_content.append(text)
-                current_content.append(separator)
-                current_batch_size += file_size + sep_size
-            except Exception as e:
-                logger.error(f"Error reading {f}: {e}")
+async def run_merger_worker(queue: asyncio.Queue, config: RunConfig):
+    merger = get_merger(config)
+    while True:
+        path = await queue.get()
+        if path is None:
+            merger.close()
+            queue.task_done()
+            break
 
-        if current_content:
-            self._write_text(current_content, part_num, ext)
-
-    def _write_text(self, content_list: List[str], part: int, ext: str):
-        fname = f"{self.config.output_name}_part{part}{ext}"
-        out_path = self.config.output_dir / fname
-        try:
-            with out_path.open("w", encoding="utf-8") as f:
-                [f.write(c) for c in content_list]
-            logger.info(f"Saved: {out_path}")
-        except Exception as e:
-            logger.error(f"Failed to write text file {out_path}: {e}")
+        merger.add(path)
+        queue.task_done()

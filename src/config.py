@@ -24,7 +24,7 @@ class RunConfig(BaseModel):
     output_name: str
     output_type: OutputType
     md_strategy: MarkdownStrategy
-    max_depth: int
+    max_urls: int
     max_filesize_mb: int
     concurrency_limit: int = 20
 
