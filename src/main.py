@@ -1,63 +1,93 @@
+# src/main.py
 import asyncio
 import logging.config
+import shutil
+import tempfile
+from pathlib import Path
 
 import httpx
 from playwright.async_api import async_playwright
 
-from src.utils.httpx_utils import load_cookies_from_state
+from src.cli import parse_args, get_user_inputs, interactive_auth_check
+from src.config import RunConfig, OutputType
+from src.constants import LOGGING_CONFIG, STATE_FILE
+from src.crawler import crawl_for_urls
+from src.fetcher import ContentFetcher
+from src.merger import Merger
 from src.utils.playwright_utils import get_browser_context
-from src.constants import LOGGING_CONFIG, SRC_DIR, STATE_FILE
-from src.pdf import create_pdf_from_urls
-from src.search import async_search
-
-DEFAULT_OUTPUT = SRC_DIR / "output2.pdf"
+from src.utils.httpx_utils import load_cookies_from_state
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
 
-async def main():
+async def run_process(config: RunConfig):
+    logger.info(f"Starting job: {config.output_name}")
+    logger.info(f"Target: {config.start_url} (Matches: {config.allowed_prefixes})")
 
-    start_url = "https://publish.obsidian.md/git-doc/Start+here"
-    allowed_prefixes = "https://publish.obsidian.md/git-doc/"
-
-    def url_filter(url: str) -> bool:
-        """Checks if a URL starts with any of the allowed prefixes."""
-        return url.startswith(allowed_prefixes)
-
-    logger.info(f"Loading cookies from {STATE_FILE}")
+    # 1. Setup HTTPX Client (Fast Crawling)
     cookies = load_cookies_from_state(STATE_FILE)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
 
-    logger.info("Starting fast HTTPX-based search...")
-    async with httpx.AsyncClient(cookies=cookies, follow_redirects=True, timeout=20.0) as client:
-        # Add a User-Agent, as many sites block default httpx requests
-        client.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
+    async with httpx.AsyncClient(cookies=cookies, follow_redirects=True, timeout=20.0, headers=headers) as client:
+
+        # 2. Crawl (Discovery Phase)
+        urls = await crawl_for_urls(
+            client=client,
+            start_url=config.start_url,
+            allowed_prefixes=config.allowed_prefixes,
+            max_depth=config.max_depth,
+            limit=config.concurrency_limit
         )
 
-        urls = await async_search(
-            client=client, url=start_url,
-            depth=5, url_filter=url_filter,
-            limit=20, pbar=True,
-        )
+        if not urls:
+            logger.warning("No URLs found.")
+            return
 
-    if not urls:
-        logger.warning("No URLs found by the search. Exiting.")
-        return
+        # 3. Fetch (Data Gathering Phase)
+        # We use a temporary directory for intermediate files to manage memory and safety
+        with tempfile.TemporaryDirectory() as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
+            fetcher = ContentFetcher(config, temp_dir)
 
-    urls_list = sorted(urls)
-    logger.info(f"Search complete. Converting {len(urls_list)} URLs to PDF.")
+            # If PDF-Rendered, we need Playwright
+            if config.output_type == OutputType.PDF_RENDERED:
+                async with async_playwright() as p:
+                    async with get_browser_context(p, headless=True, storage_state=STATE_FILE) as context:
+                        files = await fetcher.process_urls(urls, client, context)
+            else:
+                # Pure HTTPX fetching for text/md
+                files = await fetcher.process_urls(urls, client, None)
 
-    logger.info("Starting Playwright-based PDF creation...")
-    async with async_playwright() as p:
-        async with get_browser_context(p, storage_state=STATE_FILE, headless=True, save_on_exit=False) as context:
-            await create_pdf_from_urls(
-                browser=context,urls=urls_list,
-                output_file=DEFAULT_OUTPUT,
-                limit=10, pbar=True,
-            )
+            # 4. Merge (Output Phase)
+            if files:
+                merger = Merger(config)
+                merger.merge(files)
+            else:
+                logger.warning("No content was successfully fetched.")
+
+
+async def main():
+    # Parse CLI Flags
+    args = parse_args()
+
+    # Interactive Setup
+    try:
+        config = get_user_inputs(args)
+
+        # Ask for auth update
+        await interactive_auth_check()
+
+        # Run
+        await run_process(config)
+
+    except KeyboardInterrupt:
+        logger.info("Aborted by user.")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
