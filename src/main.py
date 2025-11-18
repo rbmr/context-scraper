@@ -33,41 +33,46 @@ async def run_process(config: RunConfig):
 
     async with httpx.AsyncClient(cookies=cookies, follow_redirects=True, timeout=20.0, headers=headers) as client:
 
-        # 2. Crawl (Discovery Phase)
-        urls = await crawl_for_urls(
-            client=client,
-            start_url=config.start_url,
-            allowed_prefixes=config.allowed_prefixes,
-            max_depth=config.max_depth,
-            limit=config.concurrency_limit
-        )
+        # Pipeline Setup
+        queue = asyncio.Queue()
 
-        if not urls:
-            logger.warning("No URLs found.")
-            return
-
-        # 3. Fetch (Data Gathering Phase)
-        # We use a temporary directory for intermediate files to manage memory and safety
         with tempfile.TemporaryDirectory() as temp_dir_str:
             temp_dir = Path(temp_dir_str)
             fetcher = ContentFetcher(config, temp_dir)
+            files = []
 
-            # If PDF-Rendered, we need Playwright
-            if config.output_type == OutputType.PDF_RENDERED:
-                async with async_playwright() as p:
-                    async with get_browser_context(p, headless=True, storage_state=STATE_FILE) as context:
-                        files = await fetcher.process_urls(urls, client, context)
-            else:
-                # Pure HTTPX fetching for text/md
-                files = await fetcher.process_urls(urls, client, None)
+            # Define Consumer Wrapper to handle Context if needed
+            async def run_consumer():
+                if config.output_type == OutputType.PDF_RENDERED:
+                    async with async_playwright() as p:
+                        async with get_browser_context(p, headless=True, storage_state=STATE_FILE) as context:
+                            return await fetcher.process_queue(queue, client, context)
+                else:
+                    return await fetcher.process_queue(queue, client, None)
 
-            # 4. Merge (Output Phase)
+            # Start Consumer
+            consumer_task = asyncio.create_task(run_consumer())
+
+            # 2. Crawl (Producer Phase)
+            await crawl_for_urls(
+                client=client,
+                start_url=config.start_url,
+                allowed_prefixes=config.allowed_prefixes,
+                max_depth=config.max_depth,
+                process_queue=queue,
+                limit=config.concurrency_limit
+            )
+
+            # Signal End of Crawl
+            await queue.put(None)
+            files = await consumer_task
+
+            # 3. Merge (Output Phase)
             if files:
                 merger = Merger(config)
                 merger.merge(files)
             else:
                 logger.warning("No content was successfully fetched.")
-
 
 async def main():
     # Parse CLI Flags

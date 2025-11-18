@@ -1,7 +1,7 @@
 import logging
-from typing import List, Set, Callable
+import asyncio
+from typing import List, Set, Callable, Tuple, Optional
 from urllib.parse import urljoin, urlparse, urlunparse
-
 import httpx
 from bs4 import BeautifulSoup, SoupStrainer
 
@@ -30,17 +30,17 @@ def parse_links(content: str, url: str) -> set[str]:
 
     return links
 
-async def extract_links_task(response: httpx.Response) -> Set[str]:
+async def extract_links_task(response: httpx.Response) -> Tuple[str, Set[str], Optional[str]]:
     """
-    Worker task: extracts links from a single response.
+    Worker task: extracts links from a single response. Returns (url, links, content).
     """
     url = str(response.url)
     # Simple content type check
     ctype = response.headers.get("content-type", "")
     if "text/html" not in ctype:
-        return set()
+        return url, set(), None
 
-    return parse_links(response.text, url)
+    return url, parse_links(response.text, url), response.text
 
 
 async def crawl_for_urls(
@@ -48,6 +48,7 @@ async def crawl_for_urls(
         start_url: str,
         allowed_prefixes: List[str],
         max_depth: int,
+        process_queue: asyncio.Queue,
         limit: int = 20
 ) -> List[str]:
     """
@@ -81,8 +82,10 @@ async def crawl_for_urls(
 
         # Aggregate new links
         next_queue = set()
-        for links in results:
+        for url, links, content in results:
             next_queue.update(links)
+            if content:
+                process_queue.put_nowait((url, content))
 
         # Filter
         next_queue = {u for u in next_queue if url_filter(u)}

@@ -41,6 +41,43 @@ class ContentFetcher:
         )
         return [r for r in results if r is not None]
 
+    async def process_queue(
+            self,
+            queue: asyncio.Queue,
+            client: httpx.AsyncClient,
+            context: Optional[BrowserContext]
+    ) -> List[Path]:
+        """Consumes (url, content) from queue and saves them."""
+        saved_files = []
+        file_counter = 0
+
+        while True:
+            item = await queue.get()
+            if item is None:
+                queue.task_done()
+                break
+
+            url, content = item
+            dest = self.temp_dir / f"chunk_{file_counter:05d}"
+            file_counter += 1
+
+            try:
+                # If PDF Rendered, we must use browser (ignoring cached text)
+                if self.config.output_type == OutputType.PDF_RENDERED:
+                    path = await self._fetch_single(url, dest, client, context)
+                else:
+                    # Use cached content directly
+                    ext = ".md" if self.config.output_type == OutputType.MARKDOWN else ".txt"
+                    path = await self._save_as_text(content, dest.with_suffix(ext), is_md_source=False)
+
+                if path:
+                    saved_files.append(path)
+            except Exception as e:
+                logger.error(f"Error processing {url}: {e}")
+
+            queue.task_done()
+        return saved_files
+
     async def _fetch_single(
             self,
             url: str,
