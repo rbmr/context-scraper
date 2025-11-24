@@ -24,7 +24,7 @@ class RunConfig(BaseModel):
     md_strategy: MarkdownStrategy
     max_urls: int
     max_filesize_mb: int
-    concurrency_limit: int = 20
+    concurrency_limit: int = 10
 
     @property
     def max_bytes(self) -> int:

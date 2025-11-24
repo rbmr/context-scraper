@@ -30,7 +30,7 @@ async def run_process(config: RunConfig):
     # 2. Setup Resources
     cookies = load_cookies_from_state(STATE_FILE)
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safar/537.36"
     }
 
     async with httpx.AsyncClient(cookies=cookies, follow_redirects=True, timeout=20.0, headers=headers) as client:
@@ -62,7 +62,10 @@ async def run_process(config: RunConfig):
                 else:
                     await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, None, client)
 
-            fetcher_task = asyncio.create_task(launch_fetcher())
+            fetcher_tasks = [
+                asyncio.create_task(launch_fetcher())
+                for _ in range(config.concurrency_limit)
+            ]
 
             # C. Merger (Consumer)
             merger_task = asyncio.create_task(run_merger_worker(merge_queue, config))
@@ -72,9 +75,16 @@ async def run_process(config: RunConfig):
             await crawler_task
             logger.info("Crawler finished. Waiting for fetcher...")
 
+            # Signal fetchers to finish
+            for _ in range(config.concurrency_limit - 1):
+                await fetch_queue.put(None)
+
             # Fetcher sees None, finishes work, puts None in merge_queue.
-            await fetcher_task
+            await asyncio.gather(*fetcher_tasks)
             logger.info("Fetcher finished. Waiting for merger...")
+
+            # Signal merger to finish
+            await merge_queue.put(None)
 
             # Merger sees None, flushes, and exits.
             await merger_task

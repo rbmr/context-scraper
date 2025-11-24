@@ -103,7 +103,7 @@ async def run_fetcher_worker(
         config: RunConfig,
         temp_dir: Path,
         context: Optional[BrowserContext],
-        client: Optional[httpx.AsyncClient]  # <--- Added Client
+        client: Optional[httpx.AsyncClient]
 ):
     fetcher = get_fetcher_strategy(config, temp_dir)
     file_counter = 0
@@ -111,7 +111,7 @@ async def run_fetcher_worker(
     while True:
         item = await queue.get()
         if item is None:
-            await merge_queue.put(None)
+            # await merge_queue.put(None)
             queue.task_done()
             break
 
