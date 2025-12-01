@@ -110,7 +110,7 @@ def get_user_inputs(args: argparse.Namespace) -> RunConfig:
 def parse_args():
     parser = argparse.ArgumentParser(description="Async Web Crawler & Converter")
     parser.add_argument("--start-url", help="Initial URL to crawl")
-    parser.add_argument("--prefixes", nargs="+", help="Allowed URL prefixes")
+    parser.add_argument("--prefixes", nargs="+", help="Allowed URL prefixes (supports glob wildcards, e.g. *.example.com/*)")
     parser.add_argument("--output-dir", help="Output directory")
     parser.add_argument("--output-type", choices=[e.value for e in OutputType], help="Output format")
     parser.add_argument("--md-strategy", choices=[e.value for e in MarkdownStrategy], help="Markdown checking strategy")

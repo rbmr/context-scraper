@@ -8,6 +8,8 @@ from bs4 import BeautifulSoup, SoupStrainer
 from src.utils.async_utils import PBarConfig
 from src.utils.httpx_utils import httpx_process_urls
 
+import fnmatch
+
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +47,25 @@ async def run_crawler(
     logger.info(f"Starting crawl from {start_url} (Max URLs: {max_urls})")
 
     def url_filter(u: str) -> bool:
-        return any(u.startswith(p) for p in allowed_prefixes)
+        """
+        Accepts glob patterns in allowed_prefixes.
+        - If a pattern contains scheme (://) it is matched against the full URL.
+        - If a pattern has no scheme, it is matched against 'netloc + path' (e.g. 'example.com/path').
+        - If a pattern contains wildcards (*, ?, [..]) use fnmatch, otherwise use startswith.
+        """
+        parsed = urlparse(u)
+        full_url = u
+        netloc_path = f"{parsed.netloc}{parsed.path}"
+
+        for p in allowed_prefixes:
+            target = full_url if "://" in p else netloc_path
+            if any(ch in p for ch in "*?[]"):
+                if fnmatch.fnmatch(target, p):
+                    return True
+            else:
+                if target.startswith(p):
+                    return True
+        return False
 
     discovered = {start_url}
     to_visit = {start_url}
