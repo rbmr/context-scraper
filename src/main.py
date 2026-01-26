@@ -1,63 +1,113 @@
 import asyncio
 import logging.config
+import tempfile
+from pathlib import Path
 
 import httpx
 from playwright.async_api import async_playwright
 
-from src.utils.httpx_utils import load_cookies_from_state
+from src.cli import parse_args, get_user_inputs, interactive_auth_check
+from src.config import RunConfig, OutputType
+from src.constants import LOGGING_CONFIG, STATE_FILE
 from src.utils.playwright_utils import get_browser_context
-from src.constants import LOGGING_CONFIG, SRC_DIR, STATE_FILE
-from src.pdf import create_pdf_from_urls
-from src.search import async_search
-
-DEFAULT_OUTPUT = SRC_DIR / "output2.pdf"
+from src.utils.httpx_utils import load_cookies_from_state
+from src.fetcher import run_fetcher_worker
+from src.merger import run_merger_worker
+from src.crawler import run_crawler
 
 logging.config.dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger(__name__)
 
 
-async def main():
 
-    start_url = "https://publish.obsidian.md/git-doc/Start+here"
-    allowed_prefixes = "https://publish.obsidian.md/git-doc/"
+async def run_process(config: RunConfig):
+    logger.info(f"Starting job: {config.output_name}")
 
-    def url_filter(url: str) -> bool:
-        """Checks if a URL starts with any of the allowed prefixes."""
-        return url.startswith(allowed_prefixes)
+    # 1. Setup Queues
+    fetch_queue = asyncio.Queue()
+    merge_queue = asyncio.Queue()
 
-    logger.info(f"Loading cookies from {STATE_FILE}")
+    # 2. Setup Resources
     cookies = load_cookies_from_state(STATE_FILE)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safar/537.36"
+    }
 
-    logger.info("Starting fast HTTPX-based search...")
-    async with httpx.AsyncClient(cookies=cookies, follow_redirects=True, timeout=20.0) as client:
-        # Add a User-Agent, as many sites block default httpx requests
-        client.headers.update(
-            {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            }
-        )
+    async with httpx.AsyncClient(cookies=cookies, follow_redirects=True, timeout=20.0, headers=headers) as client:
+        with tempfile.TemporaryDirectory() as temp_dir_str:
+            temp_dir = Path(temp_dir_str)
 
-        urls = await async_search(
-            client=client, url=start_url,
-            depth=5, url_filter=url_filter,
-            limit=20, pbar=True,
-        )
+            # 3. Define Pipeline Tasks
 
-    if not urls:
-        logger.warning("No URLs found by the search. Exiting.")
-        return
-
-    urls_list = sorted(urls)
-    logger.info(f"Search complete. Converting {len(urls_list)} URLs to PDF.")
-
-    logger.info("Starting Playwright-based PDF creation...")
-    async with async_playwright() as p:
-        async with get_browser_context(p, storage_state=STATE_FILE, headless=True, save_on_exit=False) as context:
-            await create_pdf_from_urls(
-                browser=context,urls=urls_list,
-                output_file=DEFAULT_OUTPUT,
-                limit=10, pbar=True,
+            # A. Crawler (Producer)
+            crawler_task = asyncio.create_task(
+                run_crawler(
+                    client=client,
+                    start_url=config.start_url,
+                    allowed_prefixes=config.allowed_prefixes,
+                    max_urls=config.max_urls,
+                    fetch_queue=fetch_queue,
+                    limit=config.concurrency_limit
+                )
             )
+
+            # B. Fetcher (Transformer)
+            # Needs Playwright context if PDF output is requested
+            async def launch_fetcher():
+                if config.output_type == OutputType.PDF:
+                    async with async_playwright() as p:
+                        async with get_browser_context(p, headless=True, storage_state=STATE_FILE) as context:
+                            # Pass 'client' here
+                            await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, context, client)
+                else:
+                    await run_fetcher_worker(fetch_queue, merge_queue, config, temp_dir, None, client)
+
+            fetcher_tasks = [
+                asyncio.create_task(launch_fetcher())
+                for _ in range(config.concurrency_limit)
+            ]
+
+            # C. Merger (Consumer)
+            merger_task = asyncio.create_task(run_merger_worker(merge_queue, config))
+
+            # 4. Wait for pipeline completion
+            # We await the crawler first. Once it finishes, it puts None in fetch_queue.
+            await crawler_task
+            logger.info("Crawler finished. Waiting for fetcher...")
+
+            # Signal fetchers to finish
+            for _ in range(config.concurrency_limit - 1):
+                await fetch_queue.put(None)
+
+            # Fetcher sees None, finishes work, puts None in merge_queue.
+            await asyncio.gather(*fetcher_tasks)
+            logger.info("Fetcher finished. Waiting for merger...")
+
+            # Signal merger to finish
+            await merge_queue.put(None)
+
+            # Merger sees None, flushes, and exits.
+            await merger_task
+            logger.info("Merger finished. Job Complete.")
+async def main():
+    # Parse CLI Flags
+    args = parse_args()
+
+    # Interactive Setup
+    try:
+        config = get_user_inputs(args)
+
+        # Ask for auth update
+        await interactive_auth_check()
+
+        # Run
+        await run_process(config)
+
+    except KeyboardInterrupt:
+        logger.info("Aborted by user.")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

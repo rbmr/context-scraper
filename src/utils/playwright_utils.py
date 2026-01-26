@@ -77,5 +77,24 @@ async def run_browser():
             async with open_page(context) as page:
                 await page.pause()
 
+async def run_browser_auth():
+    """Helper to run a headed browser for manual authentication."""
+    from playwright.async_api import async_playwright
+    async with async_playwright() as p:
+        # Create context with save on exit
+        async with get_browser_context(p, headless=False, storage_state=STATE_FILE, save_on_exit=True) as context:
+            page = await context.new_page()
+            await page.goto("https://google.com")  # Just a dummy start
+            logger.info("Browser open. Please navigate to target, login, then CLOSE THE BROWSER WINDOW.")
+
+            # Wait for the context to close (user closes window)
+            # Since context manager handles close on exit of block, we wait indefinitely?
+            # No, playwright script usually pauses.
+            # A simple way is to poll or wait for closed.
+            try:
+                await page.pause()  # This opens inspector and waits
+            except Exception:
+                pass
+
 if __name__ == "__main__":
     asyncio.run(run_browser())
